@@ -1,38 +1,68 @@
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { prisma } from '../utils/db.js';
 
+/**
+ * Real-time reasoning event stream for the Mission Control UI.
+ * Strictly adheres to the Phase 5 Event Consumption Contract.
+ */
 export class StreamController {
-  /**
-   * Real-time reasoning event stream for the Mission Control UI.
-   * Derived from the EventLog append-only source of truth.
-   */
   static async stream(request: FastifyRequest, reply: FastifyReply) {
     const { executionId } = request.params as { executionId: string };
 
-    // Set headers for SSE
+    // SSE Header setup
     reply.raw.setHeader('Content-Type', 'text/event-stream');
     reply.raw.setHeader('Cache-Control', 'no-cache');
     reply.raw.setHeader('Connection', 'keep-alive');
 
-    // Send initial history for replayability (Source of Truth)
+    let lastSequenceNum = 0;
+
+    // Helper to send formatted event
+    const sendEvent = (event: any) => {
+      const contractEvent = {
+        executionId: event.executionId,
+        nodeId: event.nodeId,
+        logicalTimestamp: event.logicalTimestamp,
+        agent: event.agent,
+        eventType: event.eventType,
+        payload: event.payload,
+        causalParentEventId: event.causalParentEventId
+      };
+
+      reply.raw.write(`id: ${event.id}\n`);
+      reply.raw.write(`event: ${event.eventType}\n`);
+      reply.raw.write(`data: ${JSON.stringify(contractEvent)}\n\n`);
+    };
+
+    // 1. Send History (Catch up)
     const history = await prisma.eventLog.findMany({
       where: { executionId },
       orderBy: { sequenceNum: 'asc' },
     });
 
     for (const event of history) {
-      reply.sse({
-        id: event.id,
-        event: event.eventType,
-        data: event,
-      });
+      sendEvent(event);
+      lastSequenceNum = Math.max(lastSequenceNum, event.sequenceNum);
     }
 
-    // In a real implementation, we would subscribe to a Redis Pub/Sub here
-    // to push new events as they are emitted by the EventBus.
-    // For now, we'll simulate a long-polling or just close after history
-    // since we are focusing on the architecture.
-    
-    // NOTE: Strict Event Contract is maintained here.
+    // 2. Poll for new events (Distributed simulation)
+    const interval = setInterval(async () => {
+      const newEvents = await prisma.eventLog.findMany({
+        where: { 
+          executionId,
+          sequenceNum: { gt: lastSequenceNum }
+        },
+        orderBy: { sequenceNum: 'asc' }
+      });
+
+      for (const event of newEvents) {
+        sendEvent(event);
+        lastSequenceNum = Math.max(lastSequenceNum, event.sequenceNum);
+      }
+    }, 1000);
+
+    // Cleanup on close
+    request.raw.on('close', () => {
+      clearInterval(interval);
+    });
   }
 }
