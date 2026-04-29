@@ -1,0 +1,105 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Organization {
+  id        String   @id @default(uuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  users     User[]
+  intents   Intent[]
+  policies  Policy[]
+}
+
+model User {
+  id             String       @id @default(uuid())
+  email          String       @unique
+  name           String?
+  passwordHash   String
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model Intent {
+  id             String       @id @default(uuid())
+  intent         String
+  constraints    Json
+  successCriteria Json
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  executions     Execution[]
+  patterns       CognitivePattern[]
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model Execution {
+  id             String     @id @default(uuid())
+  intentId       String
+  intent         Intent     @relation(fields: [intentId], references: [id])
+  events         EventLog[]
+  createdAt      DateTime   @default(now())
+  
+  // Phase 5: Distributed Leasing
+  ownerNodeId    String?    // Node holding the lease
+  leaseExpiresAt DateTime?  // When ownership expires
+}
+
+model EventLog {
+  id          String    @id @default(uuid())
+  executionId String
+  execution   Execution @relation(fields: [executionId], references: [id])
+  intentId    String
+  agent       AgentType
+  eventType   String
+  timestamp   DateTime  @default(now())
+  payload     Json
+  stepId      String
+  sequenceNum Int       @default(autoincrement())
+
+  // Phase 5: Distributed Causal Ordering
+  nodeId               String?   // ID of node that emitted the event
+  logicalTimestamp     Int?      // Lamport clock value
+  causalParentEventId  String?   // Parent event ID in the causal chain
+
+  @@index([executionId, sequenceNum])
+}
+
+enum AgentType {
+  PLANNER
+  EXECUTOR
+  CRITIC
+  MEMORY
+  SYSTEM
+  POLICY
+  LEARNING
+}
+
+model Policy {
+  id             String       @id @default(uuid())
+  name           String
+  version        Int          @default(1)
+  constraints    Json         // e.g., max_retries, allowed_tools, cost_limit
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+}
+
+model CognitivePattern {
+  id             String       @id @default(uuid())
+  intentId       String
+  intent         Intent       @relation(fields: [intentId], references: [id])
+  patternType    String       // e.g., 'failure_recovery', 'success_path'
+  triggerContext Json         // What state triggered this pattern
+  synthesis      Json         // The learned insight (e.g., 'never use tool X for intent Y')
+  createdAt      DateTime     @default(now())
+}
